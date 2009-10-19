@@ -153,42 +153,46 @@ class BreakTheBottle(BottleException):
 # WSGI abstraction: Request and response management
 
 _apps = dict()
-def app(name='default', newapp = None):
-    """
-    Returns a named app or creates a new one.
-    Defaults to 'default'
-    """
-    if newapp:
-        _apps[name] = newapp
+def app(name=None):
+    """ Get a named app or the last app returned. When missing, create it. """
+    if name:
+        app.default = name
     if name not in _apps:
-        _apps[name] = Bottle()
-    return _apps[name]
+        _apps[app.default] = Bottle()
+    return _apps[app.default]
+app.default = 'default'
 
 # BC with 0.6.3
-def default_app(newapp=None): return app('default', newapp)
+def default_app(): return app()
+
 
 
 class Router(object):
     def __init__(self, optimize):
         self.optimize = bool(optimize)
+        self.fallback = {'HEAD':'GET'}
         self.simple = {}
         self.regexp = {}
-        self.fallback = {'HEAD':'GET'}
-
         self.default = None
-        self.error = {}
 
     def match_url(self, url, method='GET', fallback=None):
         """
         Returns the first matching handler and a parameter dict or (None, None)
         """
         url = url.strip().lstrip("/ ")
+        if self.subroutes:
+            sub, tail = url.split('/', 1)
+            if sub in self.subroutes:
+               handler, args = self.subroutes[sub].match_url(tail)
+               if handler:
+                   return (handler, args)
         route = self.simple.get(method,{}).get(url,None)
         if route:
             return (route, {})
         routes = self.regexp.get(method,[])
         for i in xrange(len(routes)):
-            pattern, handler, route = routes[i]
+            prefix, pattern, handler = routes[i
+            if not url.startswith(prefix): continue
             match = pattern.match(url)
             if match:
                 if self.optimize and i > 0 and random.random() <= 0.001:
@@ -201,45 +205,58 @@ class Router(object):
         else:
             return (None, None)
     
-    def match_error(self, error):
-        return self.error.get(error, None)
-
-    def add_controller(self, route, controller, **kargs):
+    def add_controller(self, route, controller, action=None):
         """ Adds a controller class or object """
-        if '{action}' not in route and 'action' not in kargs:
-            raise BottleException("Routes to controller classes or object MUST"
-                " contain an {action} placeholder or use the action-parameter")
-        for action in (m for m in dir(controller) if not m.startswith('_')):
-            handler = getattr(controller, action)
-            if callable(handler) and action == kargs.get('action', action):
-                self.add_route(route.replace('{action}', action), handler, **kargs)
+        if '{action}' not in route and not action:
+            raise BottleException("Routes using BaseController MUST"
+                " contain an {action} placeholder or an action parameter")
+        for name in (m for m in dir(controller) if not m.startswith('_')):
+            handler = getattr(controller, name)
+            if callable(handler) and name == action or not action)
+            and action not in controller.protect:
+                name = controller.rename.get(name, name)
+                self.add_route(route.replace('{action}', name), handler, **kargs)
 
+    def add_simple(self, route, handler, method):
+        self.simple.setdefault(method, {})[route] = handler
+        
+    def add_regexp(self, route, handler, method):
+        pattern = re.sub(r':([a-zA-Z_]+)(?P<uniq>[^\w/])(?P<re>.+?)(?P=uniq)',
+                         r'(?P<\1>\g<re>)', route)
+        pattern = re.sub(r':([a-zA-Z_]+)', r'(?P<\1>[^/]+)', pattern)
+        pattern = re.compile('^%s$' % pattern)
+        prefix = re.match(r'^((\w+/)*\w*)', pattern).group(0)
+        self.regexp.setdefault(method, []).append([prefix, pattern, handler])
+
+        
     def add_route(self, route, handler, method='GET', simple=False, **kargs):
         """ Adds a new route to the route mappings. """
+        method = method.strip().upper()
+        route = route.strip().lstrip('$^/ ').rstrip('$^ ')
+
         if isinstance(handler, type) and issubclass(handler, BaseController):
             handler = handler()
         if isinstance(handler, BaseController):
-            self.add_controller(route, handler, method=method, simple=simple, **kargs)
-            return
-        method = method.strip().upper()
-        route = route.strip().lstrip('$^/ ').rstrip('$^ ')
+            return self.add_controller(route, handler, method=method, simple=simple, **kargs)
         if simple or re.match(r'^(\w+/)*\w*$', route):
-            self.simple.setdefault(method, {})[route] = handler
+            self.add_simple(route, handler, method)
         else:
-            pattern = re.sub(r':([a-zA-Z_]+)(?P<uniq>[^\w/])(?P<re>.+?)(?P=uniq)',
-                             r'(?P<\1>\g<re>)',route)
-            pattern = re.sub(r':([a-zA-Z_]+)', r'(?P<\1>[^/]+)', pattern)
-            pattern = re.compile('^%s$' % pattern)
-            self.regexp.setdefault(method, []).append([pattern, handler, route])
-
+            self.add_regexp(route, handler, method)
 
     def set_default(self, handler):
         self.default_route = handler
 
-    def set_error_handler(self, code, handler):
-        """ Adds a new error handler. """
-        self.error_handler[int(code)] = handler
 
+
+class BaseController(object):
+    _singleton = None
+    protect = []
+    rename = dict()
+    
+    def __new__(cls, *a, **k):
+        if not cls._singleton:
+            cls._singleton = object.__new__(cls, *a, **k)
+        return cls._singleton
 
 
 
@@ -249,9 +266,13 @@ class Bottle(object):
         self.autojson = autojson
         self.clearhead = clearhead
         self.catchall = catchall
+        self.error_handler = dict()
+        self.routes = Router()
         self.serve = True
 
-
+    def set_error_handler(self, code, handler):
+        """ Adds a new error handler. """
+        self.error_handler[int(code)] = handler
 
     def cast(self, out):
         """
@@ -296,10 +317,11 @@ class Bottle(object):
                 handler, args = self.routes.match_url(request.path, request.method)
                 if not handler:
                     raise HTTPError(404, "Not found")
-                output = handler(**args)
-                db.close()
-            except BreakTheBottle, e:
-                output = e.output
+                try:
+                    output = handler(**args)
+                except BreakTheBottle, e:
+                    output = e.output
+                db.close() # TODO: Remove, replace with event handler?
             except HTTPError, e:
                 response.status = e.http_status
                 output = self.routes.match_error.get(response.status, str)(e)
@@ -453,12 +475,7 @@ class Response(threading.local):
                             get_content_type.__doc__)
 
 
-class BaseController(object):
-    _singleton = None
-    def __new__(cls, *a, **k):
-        if not cls._singleton:
-            cls._singleton = object.__new__(cls, *a, **k)
-        return cls._singleton
+
 
 
 def abort(code=500, text='Unknown Error: Appliction stopped.'):
@@ -551,19 +568,28 @@ def route(url, **kargs):
     """
     Decorator for request handler. Same as add_route(url, handler, **kargs).
     """
-    return default_app().route(url, **kargs)
+    def decorator(func):
+        app().routes.add_route(url, func, **kargs)
+        return func
+    return decorator
 
 def default():
     """
     Decorator for request handler. Same as set_default(handler).
     """
-    return default_app().default()
+    def decorator(func):
+        app().routes.set_default(func, **kargs)
+        return func
+    return decorator
 
 def error(code=500):
     """
     Decorator for error handler. Same as set_error_handler(code, handler).
     """
-    return default_app().error(code)
+    def decorator(func):
+        app().routes.set_error_handler(code, func)
+        return func
+    return decorator
 
 
 
