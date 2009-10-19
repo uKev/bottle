@@ -152,57 +152,57 @@ class BreakTheBottle(BottleException):
 
 # WSGI abstraction: Request and response management
 
-_default_app = None
-def default_app(newapp = None):
+_apps = dict()
+def app(name='default', newapp = None):
     """
-    Returns the current default app or sets a new one.
-    Defaults to an instance of Bottle
+    Returns a named app or creates a new one.
+    Defaults to 'default'
     """
-    global _default_app
     if newapp:
-        _default_app = newapp
-    if not _default_app:
-        _default_app = Bottle()
-    return _default_app
+        _apps[name] = newapp
+    if name not in _apps:
+        _apps[name] = Bottle()
+    return _apps[name]
+
+# BC with 0.6.3
+def default_app(newapp=None): return app('default', newapp)
 
 
-class Bottle(object):
+class Router(object):
+    def __init__(self, optimize):
+        self.optimize = bool(optimize)
+        self.simple = {}
+        self.regexp = {}
+        self.fallback = {'HEAD':'GET'}
 
-    def __init__(self, catchall=True, optimize=False, autojson=True, clearhead=True):
-        self.simple_routes = {}
-        self.regexp_routes = {}
-        self.default_route = None
-        self.error_handler = {}
-        self.optimize = optimize
-        self.autojson = autojson
-        self.clearhead = clearhead
-        self.catchall = catchall
-        self.serve = True
+        self.default = None
+        self.error = {}
 
-    def match_url(self, url, method='GET'):
+    def match_url(self, url, method='GET', fallback=None):
         """
         Returns the first matching handler and a parameter dict or (None, None)
         """
         url = url.strip().lstrip("/ ")
-        # Search for static routes first
-        route = self.simple_routes.get(method,{}).get(url,None)
+        route = self.simple.get(method,{}).get(url,None)
         if route:
             return (route, {})
-        
-        routes = self.regexp_routes.get(method,[])
-        for i in range(len(routes)):
-            match = routes[i][0].match(url)
+        routes = self.regexp.get(method,[])
+        for i in xrange(len(routes)):
+            pattern, handler, route = routes[i]
+            match = pattern.match(url)
             if match:
-                handler = routes[i][1]
-                if i > 0 and self.optimize and random.random() <= 0.001:
+                if self.optimize and i > 0 and random.random() <= 0.001:
                     routes[i-1], routes[i] = routes[i], routes[i-1]
                 return (handler, match.groupdict())
-        if self.default_route:
-            return (self.default_route, {})
-        if method == 'HEAD': # Fall back to GET
-            return self.match_url(url)
+        if method in self.fallback:
+            return self.match_url(url, self.fallback[fallback])
+        elif self.default:
+            return (self.default, {})
         else:
             return (None, None)
+    
+    def match_error(self, error):
+        return self.error.get(error, None)
 
     def add_controller(self, route, controller, **kargs):
         """ Adds a controller class or object """
@@ -223,48 +223,35 @@ class Bottle(object):
             return
         method = method.strip().upper()
         route = route.strip().lstrip('$^/ ').rstrip('$^ ')
-        if re.match(r'^(\w+/)*\w*$', route) or simple:
-            self.simple_routes.setdefault(method, {})[route] = handler
+        if simple or re.match(r'^(\w+/)*\w*$', route):
+            self.simple.setdefault(method, {})[route] = handler
         else:
-            route = re.sub(r':([a-zA-Z_]+)(?P<uniq>[^\w/])(?P<re>.+?)(?P=uniq)',
-                           r'(?P<\1>\g<re>)',route)
-            route = re.sub(r':([a-zA-Z_]+)', r'(?P<\1>[^/]+)', route)
-            route = re.compile('^%s$' % route)
-            self.regexp_routes.setdefault(method, []).append([route, handler])
+            pattern = re.sub(r':([a-zA-Z_]+)(?P<uniq>[^\w/])(?P<re>.+?)(?P=uniq)',
+                             r'(?P<\1>\g<re>)',route)
+            pattern = re.sub(r':([a-zA-Z_]+)', r'(?P<\1>[^/]+)', pattern)
+            pattern = re.compile('^%s$' % pattern)
+            self.regexp.setdefault(method, []).append([pattern, handler, route])
 
-    def route(self, url, **kargs):
-        """
-        Decorator for request handler.
-        Same as add_route(url, handler, **kargs).
-        """
-        def wrapper(handler):
-            self.add_route(url, handler, **kargs)
-            return handler
-        return wrapper
 
     def set_default(self, handler):
         self.default_route = handler
-
-    def default(self):
-        """ Decorator for request handler. Same as add_defroute( handler )."""
-        def wrapper(handler):
-            self.set_default(handler)
-            return handler
-        return wrapper
 
     def set_error_handler(self, code, handler):
         """ Adds a new error handler. """
         self.error_handler[int(code)] = handler
 
-    def error(self, code=500):
-        """
-        Decorator for error handler.
-        Same as set_error_handler(code, handler).
-        """
-        def wrapper(handler):
-            self.set_error_handler(code, handler)
-            return handler
-        return wrapper
+
+
+
+class Bottle(object):
+
+    def __init__(self, catchall=True, autojson=True, clearhead=True):
+        self.autojson = autojson
+        self.clearhead = clearhead
+        self.catchall = catchall
+        self.serve = True
+
+
 
     def cast(self, out):
         """
@@ -305,8 +292,8 @@ class Bottle(object):
         try: # Unhandled Exceptions
             try: # Bottle Error Handling
                 if not self.serve:
-                    abort(503, "Server stopped")
-                handler, args = self.match_url(request.path, request.method)
+                    raise HTTPError(503, "Server stopped")
+                handler, args = self.routes.match_url(request.path, request.method)
                 if not handler:
                     raise HTTPError(404, "Not found")
                 output = handler(**args)
@@ -315,7 +302,7 @@ class Bottle(object):
                 output = e.output
             except HTTPError, e:
                 response.status = e.http_status
-                output = self.error_handler.get(response.status, str)(e)
+                output = self.routes.match_error.get(response.status, str)(e)
             output = self.cast(output)
         except (KeyboardInterrupt, SystemExit, MemoryError):
             raise
@@ -1216,6 +1203,8 @@ request = Request()
 response = Response()
 db = BottleDB()
 local = threading.local()
+config = dict()
+
 
 #TODO: Global and app local configuration (debug, defaults, ...) is a mess
 
