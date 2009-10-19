@@ -152,15 +152,15 @@ class BreakTheBottle(BottleException):
 
 # WSGI abstraction: Request and response management
 
-_apps = dict()
 def app(name=None):
     """ Get a named app or the last app returned. When missing, create it. """
     if name:
         app.default = name
-    if name not in _apps:
-        _apps[app.default] = Bottle()
-    return _apps[app.default]
+    if app.default not in app.apps:
+        app.apps[app.default] = Bottle()
+    return app.apps[app.default]
 app.default = 'default'
+app.apps = dict()
 
 # BC with 0.6.3
 def default_app(): return app()
@@ -168,52 +168,47 @@ def default_app(): return app()
 
 
 class Router(object):
-    def __init__(self, optimize):
+    def __init__(self, optimize=False):
         self.optimize = bool(optimize)
         self.fallback = {'HEAD':'GET'}
         self.simple = {}
         self.regexp = {}
         self.default = None
 
-    def match_url(self, url, method='GET', fallback=None):
+    def match_url(self, url, method='GET'):
         """
         Returns the first matching handler and a parameter dict or (None, None)
         """
         url = url.strip().lstrip("/ ")
-        if self.subroutes:
-            sub, tail = url.split('/', 1)
-            if sub in self.subroutes:
-               handler, args = self.subroutes[sub].match_url(tail)
-               if handler:
-                   return (handler, args)
         route = self.simple.get(method,{}).get(url,None)
         if route:
             return (route, {})
         routes = self.regexp.get(method,[])
         for i in xrange(len(routes)):
-            prefix, pattern, handler = routes[i
-            if not url.startswith(prefix): continue
+            prefix, pattern, handler = routes[i]
+            if not url.startswith(prefix):
+                continue
             match = pattern.match(url)
             if match:
                 if self.optimize and i > 0 and random.random() <= 0.001:
                     routes[i-1], routes[i] = routes[i], routes[i-1]
                 return (handler, match.groupdict())
         if method in self.fallback:
-            return self.match_url(url, self.fallback[fallback])
+            return self.match_url(url, self.fallback[method])
         elif self.default:
             return (self.default, {})
         else:
             return (None, None)
     
-    def add_controller(self, route, controller, action=None):
+    def add_controller(self, route, controller, action=None, **kargs):
         """ Adds a controller class or object """
         if '{action}' not in route and not action:
             raise BottleException("Routes using BaseController MUST"
                 " contain an {action} placeholder or an action parameter")
         for name in (m for m in dir(controller) if not m.startswith('_')):
             handler = getattr(controller, name)
-            if callable(handler) and name == action or not action)
-            and action not in controller.protect:
+            if callable(handler) and (name == action or action is None) \
+            and name not in controller.protect:
                 name = controller.rename.get(name, name)
                 self.add_route(route.replace('{action}', name), handler, **kargs)
 
@@ -224,8 +219,8 @@ class Router(object):
         pattern = re.sub(r':([a-zA-Z_]+)(?P<uniq>[^\w/])(?P<re>.+?)(?P=uniq)',
                          r'(?P<\1>\g<re>)', route)
         pattern = re.sub(r':([a-zA-Z_]+)', r'(?P<\1>[^/]+)', pattern)
-        pattern = re.compile('^%s$' % pattern)
         prefix = re.match(r'^((\w+/)*\w*)', pattern).group(0)
+        pattern = re.compile('^%s$' % pattern)
         self.regexp.setdefault(method, []).append([prefix, pattern, handler])
 
         
@@ -244,7 +239,7 @@ class Router(object):
             self.add_regexp(route, handler, method)
 
     def set_default(self, handler):
-        self.default_route = handler
+        self.default = handler
 
 
 
@@ -324,7 +319,7 @@ class Bottle(object):
                 db.close() # TODO: Remove, replace with event handler?
             except HTTPError, e:
                 response.status = e.http_status
-                output = self.routes.match_error.get(response.status, str)(e)
+                output = self.error_handler.get(response.status, str)(e)
             output = self.cast(output)
         except (KeyboardInterrupt, SystemExit, MemoryError):
             raise
@@ -578,7 +573,7 @@ def default():
     Decorator for request handler. Same as set_default(handler).
     """
     def decorator(func):
-        app().routes.set_default(func, **kargs)
+        app().routes.set_default(func)
         return func
     return decorator
 
@@ -587,7 +582,7 @@ def error(code=500):
     Decorator for error handler. Same as set_error_handler(code, handler).
     """
     def decorator(func):
-        app().routes.set_error_handler(code, func)
+        app().error_handler[code] = func
         return func
     return decorator
 
@@ -672,7 +667,7 @@ class FapwsServer(ServerAdapter):
 def run(app=None, server=WSGIRefServer, host='127.0.0.1', port=8080,
         interval=1, reloader=False, **kargs):
     """ Runs bottle as a web server. """
-    if not app:
+    if app is None:
         app = default_app()
     
     quiet = bool(kargs.get('quiet', False))

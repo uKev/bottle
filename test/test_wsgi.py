@@ -26,15 +26,13 @@ class WsgiTestBase(unittest.TestCase):
     def setUp(self):
         ''' Create a new Bottle app set it as default_app and register it to urllib2 '''
         self.url = 'http://test:80'
-        self.wsgi = bottle.Bottle()
-        self.oldapp = bottle.default_app()
-        bottle.default_app(self.wsgi)
+        self.wsgi = bottle.app('test%f'%time.time())
         wsgi_intercept.add_wsgi_intercept('test', 80, bottle.default_app)
 
     def tearDown(self):
         ''' Recover the olt default_app and remove wsgi_intercept from urllib2 '''
         wsgi_intercept.remove_wsgi_intercept('test', 80)
-        bottle.default_app(self.oldapp)
+        bottle.app('default')
 
     def urlopen(self, url, post=None, method=None):
         ''' Open a path using urllip2.urlopen and the wsgi_intercept domain '''
@@ -235,12 +233,13 @@ class TestRun(WsgiTestBase):
         def paratest():
             try:
                 time.sleep(1)
-                self.assertEqual('test', urllib2.urlopen('http://127.0.0.1:61382/test').read())
+                dl = urllib2.urlopen('http://127.0.0.1:61382/test').read()
+                self.assertEqual('test', dl)
             finally:
+                time.sleep(1)
                 thread.interrupt_main()
-        
         thread.start_new_thread(paratest, ())
-        bottle.run(port=61382, quiet=True)
+        bottle.run(app=bottle.app(), port=61382, quiet=True)
 
 
 suite = unittest.TestSuite()
