@@ -157,7 +157,7 @@ def app(name=None):
     if name:
         app.default = name
     if app.default not in app.apps:
-        app.apps[app.default] = Bottle()
+        app.apps[app.default] = Bottle(app.default)
     return app.apps[app.default]
 app.default = 'default'
 app.apps = dict()
@@ -257,7 +257,8 @@ class BaseController(object):
 
 class Bottle(object):
 
-    def __init__(self, catchall=True, autojson=True, clearhead=True):
+    def __init__(self, name, catchall=True, autojson=True, clearhead=True):
+        self.name = name
         self.autojson = autojson
         self.clearhead = clearhead
         self.catchall = catchall
