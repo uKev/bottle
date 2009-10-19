@@ -264,6 +264,7 @@ class Bottle(object):
         self.error_handler = dict()
         self.routes = Router()
         self.serve = True
+        self.config = dict()
 
     def set_error_handler(self, code, handler):
         """ Adds a new error handler. """
@@ -305,6 +306,7 @@ class Bottle(object):
         """ The bottle WSGI-interface. """
         request.bind(environ)
         response.bind()
+        local.app = self
         try: # Unhandled Exceptions
             try: # Bottle Error Handling
                 if not self.serve:
@@ -468,9 +470,6 @@ class Response(threading.local):
 
     content_type = property(get_content_type, set_content_type, None,
                             get_content_type.__doc__)
-
-
-
 
 
 def abort(code=500, text='Unknown Error: Appliction stopped.'):
@@ -745,6 +744,13 @@ class TemplateError(HTTPError):
         HTTPError.__init__(self, 500, message)
 
 class BaseTemplate(object):
+
+    def get_globals(self):
+        try:
+            return local.app.config.get('template.globals', dict())
+        except AttributeError:
+            return dict()
+
     def __init__(self, template='', name=None, filename=None, lookup=[]):
         """
         Create a new template.
@@ -785,7 +791,6 @@ class MakoTemplate(BaseTemplate):
     output_encoding=None
     input_encoding=None
     default_filters=None
-    global_variables={}
 
     def prepare(self):
         from mako.template import Template
@@ -808,7 +813,7 @@ class MakoTemplate(BaseTemplate):
                                 )
  
     def render(self, **args):
-        _defaults = MakoTemplate.global_variables.copy()
+        _defaults = self.get_globals().copy()
         _defaults.update(args)
         return self.tpl.render(**_defaults)
 
@@ -824,6 +829,7 @@ class CheetahTemplate(BaseTemplate):
             self.tpl = Template(file=self.filename, searchList=[self.context.vars])
  
     def render(self, **args):
+        self.context.vars.update(self.get_globals().copy())
         self.context.vars.update(args)
         out = str(self.tpl)
         self.context.vars.clear()
@@ -843,7 +849,9 @@ class Jinja2Template(BaseTemplate):
             self.tpl = self.env.get_template(self.filename)
 
     def render(self, **args):
-        return self.tpl.render(**args).encode("utf-8")
+        _defaults = self.get_globals().copy()
+        _defaults.update(args)
+        return self.tpl.render(**_defaults)
         
     def loader(self, name):
         if not name.endswith(".tpl"):
@@ -877,7 +885,7 @@ class SimpleTemplate(BaseTemplate):
         code = []
         self.includes = dict()
         class PyStmt(str):
-            def __repr__(self): return 'str(' + self + ')'
+            def __repr__(self): return '_filter(' + self + ')'
         def flush(allow_nobreak=False):
             if len(strbuffer):
                 if allow_nobreak and strbuffer[-1].endswith("\\\\\n"):
@@ -931,16 +939,20 @@ class SimpleTemplate(BaseTemplate):
         return ''.join(code)
 
     def execute(self, stdout, **args):
-        args['_stdout'] = stdout
-        args['_includes'] = self.includes
-        args['_tpl'] = args
-        eval(self.co, args)
-        if '_rebase' in args:
-            subtpl, args = args['_rebase']
+        _defaults = self.get_globals().copy()
+        _defaults.update(args)
+        _defaults['_stdout'] = stdout
+        _defaults['_includes'] = self.includes
+        _defaults['_tpl'] = _defaults
+        _defaults['_filter'] = str
+        eval(self.co, _defaults)
+        if '_rebase' in _defaults:
+            subtpl, args = _defaults['_rebase']
             args['_base'] = stdout[:] #copy stdout
             del stdout[:] # clear stdout
             return subtpl.execute(stdout, **args)
-        return args
+        return _defaults
+
     def render(self, **args):
         """ Render the template using keyword arguments as local variables. """
         stdout = []
@@ -1224,8 +1236,6 @@ request = Request()
 response = Response()
 db = BottleDB()
 local = threading.local()
-config = dict()
-
 
 #TODO: Global and app local configuration (debug, defaults, ...) is a mess
 
