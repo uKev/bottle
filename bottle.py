@@ -589,16 +589,14 @@ def error(code=500):
 
 class WSGIAdapter(object):
     def run(self, handler): # pragma: no cover
-        pass
+        raise NotImplementedError
+        
+    def shutdown(self):
+        raise NotImplementedError
 
     def __repr__(self):
         return "%s()" % (self.__class__.__name__)
 
-
-class CGIServer(WSGIAdapter):
-    def run(self, handler):
-        from wsgiref.handlers import CGIHandler
-        CGIHandler().run(handler)
 
 
 class ServerAdapter(WSGIAdapter):
@@ -612,24 +610,34 @@ class ServerAdapter(WSGIAdapter):
         return "%s (%s:%d)" % (self.__class__.__name__, self.host, self.port)
 
 
+
+class CGIServer(WSGIAdapter):
+    def run(self, handler):
+        from wsgiref.handlers import CGIHandler
+        CGIHandler().run(handler)
+
+
 class WSGIRefServer(ServerAdapter):
     def run(self, handler):
         from wsgiref.simple_server import make_server
-        srv = make_server(self.host, self.port, handler)
-        srv.serve_forever()
-
+        self.server = make_server(self.host, self.port, handler)
+        self.server.serve_forever()
+    
+    def shutdown(self):
+        thread.start_new_thread(self.server.shutdown, ())
 
 class CherryPyServer(ServerAdapter):
     def run(self, handler):
         from cherrypy import wsgiserver
-        server = wsgiserver.CherryPyWSGIServer((self.host, self.port), handler)
-        server.start()
+        self.server = wsgiserver.CherryPyWSGIServer((self.host, self.port), handler)
+        self.server.start()
 
 
 class FlupServer(ServerAdapter):
     def run(self, handler):
        from flup.server.fcgi import WSGIServer
-       WSGIServer(handler, bindAddress=(self.host, self.port)).run()
+       self.server = WSGIServer(handler, bindAddress=(self.host, self.port))
+       self.server.run()
 
 
 class PasteServer(ServerAdapter):
@@ -663,7 +671,7 @@ def run(app=None, server=WSGIRefServer, host='127.0.0.1', port=8080,
     """ Runs bottle as a web server. """
     if not app:
         app = default_app()
-    
+
     quiet = bool(kargs.get('quiet', False))
 
     # Instantiate server, if it is a class instead of an instance
@@ -675,7 +683,7 @@ def run(app=None, server=WSGIRefServer, host='127.0.0.1', port=8080,
 
     if not isinstance(server, WSGIAdapter):
         raise RuntimeError("Server must be a subclass of WSGIAdapter")
- 
+
     if not quiet and isinstance(server, ServerAdapter): # pragma: no cover
         if not reloader or os.environ.get('BOTTLE_CHILD') == 'true':
             print "Bottle server starting up (using %s)..." % repr(server)
@@ -684,6 +692,8 @@ def run(app=None, server=WSGIRefServer, host='127.0.0.1', port=8080,
             print
         else:
             print "Bottle auto reloader starting up..."
+
+    local.server = server
 
     try:
         if reloader and interval:
@@ -729,7 +739,9 @@ def reloader_run(server, app, interval):
             sys.exit(exit_status)
 
 
-
+def stop():
+    local.server.shutdown()
+    del local.server
 
 
 # Templates
