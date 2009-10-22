@@ -1234,16 +1234,31 @@ response = Response()
 context = Context()
 db = BottleDB()
 
-def app(name=None):
-    """
-        Get a named app. If no name is requested, default to the last requested.
-        When missing, create it. """
-    if name:
-        app.default = name
-    if app.default not in app.apps:
-        app.apps[app.default] = Bottle(app.default)
-    return app.apps[app.default]
-app.default = 'default'
+def app(default=None):
+    '''
+        Get the Bottle object (WSGI callable) you are currently looking for.
+
+        This is a factory for Bottle objects. Without a parameter, it returns a
+        default Bottle instance. Most of the decorators and the run() function
+        use app() this way. You can change the default by providing a name
+        parameter or a Bottle instance. Any further calls to app() in the same
+        thread will use the new default.
+
+        When called from within a running Bottle application, app() defaults to
+        the current application.
+    '''
+    if isinstance(default, Bottle):
+        app.apps[default.name] = default
+        context.app = default
+        return default
+    elif isinstance(default, basestring):
+        context.app = app.apps.setdefault(default, Bottle(default))
+        return context.app
+    elif not hasattr(context, 'app'):
+        app.apps.setdefault('default', Bottle('default'))
+    else:
+        return context.app
+
 app.apps = dict()
 def default_app(): return app() # BC with 0.6.3
 
