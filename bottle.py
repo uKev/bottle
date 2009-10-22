@@ -305,9 +305,9 @@ class Bottle(object):
 
     def __call__(self, environ, start_response):
         """ The bottle WSGI-interface. """
-        request.bind(environ)
+        context.bind(app=self)
+        request.bind(environ=environ)
         response.bind()
-        local.app = self
         try: # Unhandled Exceptions
             try: # Bottle Error Handling
                 if not self.serve:
@@ -349,8 +349,8 @@ class Request(threading.local):
         """
         Binds the enviroment of the current request to this request handler
         """
-        self._environ = environ
-        self.environ = self._environ
+        self.environ = environ
+        self._environ = self.environ
         self._GET = None
         self._POST = None
         self._GETPOST = None
@@ -471,6 +471,13 @@ class Response(threading.local):
 
     content_type = property(get_content_type, set_content_type, None,
                             get_content_type.__doc__)
+
+
+class Context(threading.local):
+    """ Represents a thread-local application context. """
+
+    def bind(self, app):
+        self.app = app
 
 
 def abort(code=500, text='Unknown Error: Appliction stopped.'):
@@ -748,7 +755,7 @@ class BaseTemplate(object):
 
     def get_globals(self):
         try:
-            return local.app.config.get('template.globals', dict())
+            return context.app.config.get('template.globals', dict())
         except AttributeError:
             return dict()
 
@@ -789,9 +796,9 @@ class BaseTemplate(object):
 
 
 class MakoTemplate(BaseTemplate):
-    output_encoding=None
-    input_encoding=None
-    default_filters=None
+    output_encoding = None
+    input_encoding = None
+    default_filters = None
 
     def prepare(self):
         from mako.template import Template
@@ -1235,10 +1242,13 @@ TRACEBACK_TEMPLATE = """
 
 request = Request()
 response = Response()
+context = Context()
 db = BottleDB()
-local = threading.local()
+
 
 #TODO: Global and app local configuration (debug, defaults, ...) is a mess
+#App Config ges to app().config or context.global
+#Per request config (Template?) goes to context.local
 
 def debug(mode=True):
     global DEBUG
