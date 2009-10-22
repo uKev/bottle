@@ -477,7 +477,11 @@ class Context(threading.local):
     """ Represents a thread-local application context. """
 
     def bind(self, app):
+        for name in dir(self):
+            if not name.startswith('__') and not name in ('bind'):
+                delattr(self, name)    
         self.app = app
+        self.config = app.config
 
 
 def abort(code=500, text='Unknown Error: Appliction stopped.'):
@@ -755,7 +759,7 @@ class BaseTemplate(object):
 
     def get_globals(self):
         try:
-            return context.app.config.get('template.globals', dict())
+            return context.config.get('template.globals', dict())
         except AttributeError:
             return dict()
 
