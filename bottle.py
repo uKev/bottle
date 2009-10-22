@@ -152,21 +152,6 @@ class BreakTheBottle(BottleException):
 
 # WSGI abstraction: Request and response management
 
-def app(name=None):
-    """ Get a named app or the last app returned. When missing, create it. """
-    if name:
-        app.default = name
-    if app.default not in app.apps:
-        app.apps[app.default] = Bottle(app.default)
-    return app.apps[app.default]
-app.default = 'default'
-app.apps = dict()
-
-# BC with 0.6.3
-def default_app(): return app()
-
-
-
 class Router(object):
     def __init__(self, optimize=False):
         self.optimize = bool(optimize)
@@ -266,6 +251,8 @@ class Bottle(object):
         self.routes = Router()
         self.serve = True
         self.config = dict()
+        self.config['template.path'] = ['./', './views/']
+
 
     def set_error_handler(self, code, handler):
         """ Adds a new error handler. """
@@ -978,8 +965,8 @@ def template(tpl, template_adapter=SimpleTemplate, **args):
     Get a rendered template as a string iterator.
     You can use a name, a filename or a template string as first parameter.
     '''
-    lookup = args.get('template_lookup', TEMPLATE_PATH)
     if tpl not in TEMPLATES or DEBUG:
+        lookup = args.get('template_lookup', app().config.get('template.path',[]))
         if "\n" in tpl or "{" in tpl or "%" in tpl or '$' in tpl:
             TEMPLATES[tpl] = template_adapter(template=tpl, lookup=lookup)
         elif '.' in tpl:
@@ -992,7 +979,6 @@ def template(tpl, template_adapter=SimpleTemplate, **args):
     args['request'] = request
     args['response'] = response
     return TEMPLATES[tpl].render(**args)
-
 
 def mako_template(tpl_name, **kargs):
     kargs['template_adapter'] = MakoTemplate
@@ -1174,9 +1160,8 @@ class BottleDB(threading.local): # pragma: no cover
 # Modul initialization and configuration
 
 DB_PATH = './'
-TEMPLATE_PATH = ['./', './views/']
-TEMPLATES = {}
 DEBUG = False
+TEMPLATES = {}
 HTTP_CODES = {
     100: 'CONTINUE',
     101: 'SWITCHING PROTOCOLS',
@@ -1249,16 +1234,18 @@ response = Response()
 context = Context()
 db = BottleDB()
 
-
-#TODO: Global and app local configuration (debug, defaults, ...) is a mess
-#App Config ges to app().config or context.global
-#Per request config (Template?) goes to context.local
+def app(name=None):
+    """
+        Get a named app. If no name is requested, default to the last requested.
+        When missing, create it. """
+    if name:
+        app.default = name
+    if app.default not in app.apps:
+        app.apps[app.default] = Bottle(app.default)
+    return app.apps[app.default]
+app.default = 'default'
+app.apps = dict()
+def default_app(): return app() # BC with 0.6.3
 
 def debug(mode=True):
-    global DEBUG
     DEBUG = bool(mode)
-
-def optimize(mode=True):
-    default_app().optimize = bool(mode)
-
-
