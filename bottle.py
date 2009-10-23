@@ -83,7 +83,7 @@ from Cookie import SimpleCookie
 import anydbm as dbm
 import subprocess
 import thread
-
+import signal
 
 try:
     from urlparse import parse_qs
@@ -103,7 +103,16 @@ try:
 except ImportError: # pragma: no cover
     json_dumps = None
 
-
+try:
+    import win32api
+    def killpid(pid):
+        win32api.TerminateProcess(pid)
+except ImportError:
+    def killpid(pid):
+        if hasattr(signal, "SIGINT"):
+            os.kill(pid, signal.SIGINT)
+        else:
+            os.kill(pid)
 
 
 
@@ -622,9 +631,7 @@ class WSGIRefServer(ServerAdapter):
         from wsgiref.simple_server import make_server
         self.server = make_server(self.host, self.port, handler)
         self.server.serve_forever()
-    
-    def shutdown(self):
-        thread.start_new_thread(self.server.shutdown, ())
+
 
 class CherryPyServer(ServerAdapter):
     def run(self, handler):
@@ -693,55 +700,94 @@ def run(app=None, server=WSGIRefServer, host='127.0.0.1', port=8080,
         else:
             print "Bottle auto reloader starting up..."
 
-    local.server = server
-
     try:
-        if reloader and interval:
-            reloader_run(server, app, interval)
+        if reloader and interval and os.environ.get('BOTTLE_CHILD') != 'true':
+            run_reloader(server, app, interval)
         else:
+            local.server = server
             server.run(app)
     except KeyboardInterrupt:
-        if not quiet: # pragma: no cover
-            print "Shutting Down..."
+        pass
+
+    if not quiet: # pragma: no cover
+        print "Shutting Down..."
 
 
-#TODO: If the parent process is killed (with SIGTERM) the childs survive...
-def reloader_run(server, app, interval):
-    if os.environ.get('BOTTLE_CHILD') == 'true':
-        # We are a child process
-        files = dict()
-        for module in sys.modules.values():
-            file_path = getattr(module, '__file__', None)
-            if file_path and os.path.isfile(file_path):
-                file_split = os.path.splitext(file_path)
-                if file_split[1] in ('.py', '.pyc', '.pyo'):
-                    file_path = file_split[0] + '.py'
-                    files[file_path] = os.stat(file_path).st_mtime
-        thread.start_new_thread(server.run, (app,))
-        while True:
-            time.sleep(interval)
-            for file_path, file_mtime in files.iteritems():
-                if not os.path.exists(file_path):
-                    print "File changed: %s (deleted)" % file_path
-                elif os.stat(file_path).st_mtime > file_mtime:
-                    print "File changed: %s (modified)" % file_path
-                else: continue
-                print "Restarting..."
-                app.serve = False
-                time.sleep(interval) # be nice and wait for running requests
-                sys.exit(3)
+"""
+Some words on the reloader:
+
+The main process will not start a server, but spawn a new child process using
+the same command line agruments used to start the main process. All module
+level code is executed twice at least! Be carefull.
+
+The child process will have os.environ['BOTTLE_CHILD'] set to 'true' and
+start as a normal non-reloading server app. As soon as any of the loaded
+modules changes, the child process is terminated and respawned by the main
+process.
+
+The reloading depends on the ability to stop the child process. If you are
+running Windows or any other operating system not suppotring signal.SIGINT
+(which raises KeyboardInterrupt), signal.SIGTERM is used to kill the child.
+Note that exit handlers and finally clauses, etc., will not be executed after
+a SIGTERM.
+"""
+
+def run_reloader(server, app, interval):
+    """
+        Runs the reloader process.
+        The reloader process restarts the child process every time it exits
+        with status code 3. If the child process fails with any other status
+        code, the reloader process exits as well because this means an error
+        occured in the child process.
+    """
+    files = dict()
+    for module in sys.modules.values():
+        file_path = getattr(module, '__file__', None)
+        if file_path and os.path.isfile(file_path):
+            file_split = os.path.splitext(file_path)
+            if file_split[1] in ('.py', '.pyc', '.pyo'):
+                file_path = file_split[0] + '.py'
+                files[file_path] = os.stat(file_path).st_mtime
+
+    def files_changed(files):
+        for file_path, file_mtime in files.iteritems():
+            if not os.path.exists(file_path):
+                print "File changed: %s (deleted)" % file_path
+                del files[file_path]
+                return True
+            elif os.stat(file_path).st_mtime > file_mtime:
+                print "File changed: %s (modified)" % file_path
+                files[file_path] = os.stat(file_path).st_mtime
+                return True
+        return False
+
     while True:
         args = [sys.executable] + sys.argv
         environ = os.environ.copy()
         environ['BOTTLE_CHILD'] = 'true'
-        exit_status = subprocess.call(args, env=environ)
-        if exit_status != 3:
-            sys.exit(exit_status)
+        try:
+            child = subprocess.Popen(args, env=environ)
+            local.child = child
+            signal.signal(signal.SIGTERM, lambda x,y: killpid(child.pid))
+            while child.poll() is None and not files_changed(files):
+                time.sleep(interval)
+            if child.poll() is not None:
+                print "Child terminated with exit code %d." % child.returncode
+                sys.exit(child.returncode)
+            killpid(child.pid)
+            print "Killing child process..."
+            child.wait()
+            print "Reloading..."
+        except (KeyboardInterrupt, SystemExit), e:
+            if child.poll() is None:
+                print "Killing child process..."
+                killpid(child.pid)
+                child.wait()
+            raise
+            
 
 
-def stop():
-    local.server.shutdown()
-    del local.server
+
 
 
 # Templates
