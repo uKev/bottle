@@ -1255,7 +1255,7 @@ def app(default=None):
         context.app = app.apps.setdefault(default, Bottle(default))
         return context.app
     elif not hasattr(context, 'app'):
-        app.apps.setdefault('default', Bottle('default'))
+        return app.apps.setdefault('default', Bottle('default'))
     else:
         return context.app
 
@@ -1263,4 +1263,5 @@ app.apps = dict()
 def default_app(): return app() # BC with 0.6.3
 
 def debug(mode=True):
+    global DEBUG
     DEBUG = bool(mode)
