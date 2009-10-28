@@ -62,7 +62,7 @@ Example
 """
 
 __author__ = 'Marcel Hellkamp'
-__version__ = '0.6.3'
+__version__ = '0.6.4'
 __license__ = 'MIT'
 
 import types
@@ -282,8 +282,6 @@ class Bottle(object):
                   lambda x: iter(lambda: x.read(8192), ''))(out)
         if isinstance(out, list) and len(out) == 1:
             response.header['Content-Length'] = str(len(out[0]))
-        if request.method.upper() == 'HEAD' and self.clearhead:
-            out = []
         if not hasattr(out, '__iter__'):
             raise TypeError('Request handler for route "%s" returned [%s] '
             'which is not iterable.' % (request.path, type(out).__name__))
@@ -311,6 +309,8 @@ class Bottle(object):
                 response.status = e.http_status
                 output = self.error_handler.get(response.status, str)(e)
             output = self.cast(output)
+            if response.status in (100, 101, 204, 304) or request.method == 'HEAD':
+                output = [] # rfc2616 section 4.3
         except (KeyboardInterrupt, SystemExit, MemoryError):
             raise
         except Exception, e:
@@ -422,9 +422,9 @@ class Response(threading.local):
         self.status = 200
         self.header_list = []
         self.header = HeaderWrapper(self.header_list)
-        self.content_type = 'text/html'
+        self.charset = 'UTF-8'
+        self.content_type = 'text/html; charset=UTF-8'
         self.error = None
-        self.charset = 'utf8'
 
     def wsgiheaders(self):
         ''' Returns a wsgi conform list of header/value pairs '''
@@ -485,9 +485,9 @@ def redirect(url, code=307):
 
 def send_file(filename, root, guessmime = True, mimetype = None):
     """ Aborts execution and sends a static files as response. """
-    root = os.path.abspath(root) + '/'
-    filename = os.path.abspath(os.path.join(root, filename.strip('/')))
-    
+    root = os.path.abspath(root) + os.sep
+    filename = os.path.abspath(os.path.join(root, filename.strip('/\\')))
+
     if not filename.startswith(root):
         abort(401, "Access denied.")
     if not os.path.exists(filename) or not os.path.isfile(filename):
