@@ -84,6 +84,7 @@ import anydbm as dbm
 import subprocess
 import thread
 import signal
+import urllib2
 
 try:
     from urlparse import parse_qs
@@ -598,7 +599,7 @@ class WSGIAdapter(object):
         raise NotImplementedError
         
     def shutdown(self):
-        raise NotImplementedError
+        pass
 
     def __repr__(self):
         return "%s()" % (self.__class__.__name__)
@@ -626,8 +627,22 @@ class CGIServer(WSGIAdapter):
 class WSGIRefServer(ServerAdapter):
     def run(self, handler):
         from wsgiref.simple_server import make_server
-        self.server = make_server(self.host, self.port, handler)
-        self.server.serve_forever()
+        srv = make_server(self.host, self.port, handler)
+        self.alive = True
+        while self.alive:
+            srv.handle_request()
+
+    def urlopen(self, path):
+        ''' Open a path using urllip2.urlopen and the wsgi_intercept domain '''
+        url = 'http://%s:%d/%s' % (self.host, self.port, path.lstrip('/'))
+        try:
+            urllib2.urlopen(url)
+        except urllib2.HTTPError, e:
+            return e
+        
+    def shutdown(self):
+      self.alive = False
+      self.urlopen('/shutdown/now')
 
 
 class CherryPyServer(ServerAdapter):
@@ -636,6 +651,8 @@ class CherryPyServer(ServerAdapter):
         self.server = wsgiserver.CherryPyWSGIServer((self.host, self.port), handler)
         self.server.start()
 
+    def shutdown(self):
+        self.server.stop()
 
 class FlupServer(ServerAdapter):
     def run(self, handler):
@@ -704,7 +721,7 @@ def run(app=None, server=WSGIRefServer, host='127.0.0.1', port=8080,
             local.server = server
             server.run(app)
     except KeyboardInterrupt:
-        pass
+        server.shutdown()
 
     if not quiet: # pragma: no cover
         print "Shutting Down..."
