@@ -845,10 +845,13 @@ class CGIServer(WSGIAdapter):
 
 
 class ServerAdapter(WSGIAdapter):
-    def __init__(self, host='127.0.0.1', port=8080, **kargs):
+    def __init__(self, host='127.0.0.1', port=8080, drop_priv=False, user='nobody', group='nogroup', **kargs):
         WSGIAdapter.__init__(self)
         self.host = host
         self.port = int(port)
+        self.drop_priv = drop_priv
+        self.user = user
+        self.group = group
         self.options = kargs
 
     def __repr__(self):
@@ -859,6 +862,8 @@ class WSGIRefServer(ServerAdapter):
     def run(self, handler):
         from wsgiref.simple_server import make_server
         srv = make_server(self.host, self.port, handler)
+        if self.drop_priv == True:
+            drop_privileges(self.user, self.group)
         srv.serve_forever()
 
 
@@ -902,7 +907,7 @@ class FapwsServer(ServerAdapter):
 
 
 def run(app=None, server=WSGIRefServer, host='127.0.0.1', port=8080,
-        interval=1, reloader=False, **kargs):
+        interval=1, reloader=False, drop_priv=False, user='nobody', group='nogroup', **kargs):
     """ Runs bottle as a web server. """
     if not app:
         app = default_app()
@@ -914,7 +919,8 @@ def run(app=None, server=WSGIRefServer, host='127.0.0.1', port=8080,
         if issubclass(server, CGIServer):
             server = server()
         elif issubclass(server, ServerAdapter):
-            server = server(host=host, port=port, **kargs)
+            server = server(host=host, port=port, drop_priv=drop_priv, user=user, group=group, **kargs)
+
 
     if not isinstance(server, WSGIAdapter):
         raise RuntimeError("Server must be a subclass of WSGIAdapter")
@@ -971,9 +977,41 @@ def reloader_run(server, app, interval):
         if exit_status != 3:
             sys.exit(exit_status)
 
+def drop_privileges(user='nobody', group='nogroup'):
+    import pwd,grp
+    target_uid_name=user
+    target_gid_name=group
 
-
-
+    uid = os.getuid()
+    gid = os.getgid()
+        
+    if os.getuid() != 0: # Not root => can not drop privileges
+        print("started as %s, can not drop privileges because there aren't any..." % \
+              pwd.getpwuid(uid).pw_name)
+    else:
+        # We are root, we can drop it.
+        target_uid = pwd.getpwnam(target_uid_name)[2]
+        target_gid = grp.getgrnam(target_gid_name)[2]
+        
+        # Need to set gid before uid because after setting uid we have no rights to change gid.
+        try:
+            os.setgid(target_gid)
+        except OSError, e:
+            print("Could not switch to gid: %s" % e)
+        
+        try:
+            os.setuid(target_uid)
+        except OSError, e:
+            print("Could not switch to uid: %s" % e)
+        
+        new_umask = 0o77
+        old_umask = os.umask(new_umask)
+            
+        print("drop_privileges: Old umask: %s, new umask: %s" % \
+              (oct(old_umask), oct(new_umask)))
+        
+        print("drop_privileges: now running as %s/%s" % \
+              (pwd.getpwuid(os.getuid()).pw_name, grp.getgrgid(os.getgid())[0]))
 
 
 # Templates
