@@ -1,10 +1,12 @@
 *.pyc
+*.pyo
+*.db
+*.log
 ._*
+.*
 *.*~
 dist/
-*.db
+build/
 MANIFEST
 bottle.egg-info/
 .htmlcoverage/
-release.sh
-test.sh
